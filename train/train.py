@@ -92,6 +92,8 @@ class WanTrainingModule(DiffusionTrainingModule):
                 inputs_shared["end_image"] = data["video"][-1]
             elif extra_input == "reference_image" or extra_input == "vace_reference_image":
                 inputs_shared[extra_input] = data[extra_input][0]
+            elif extra_input == "latent_index":
+                inputs_shared[extra_input] = True
             else:
                 inputs_shared[extra_input] = data[extra_input]
         

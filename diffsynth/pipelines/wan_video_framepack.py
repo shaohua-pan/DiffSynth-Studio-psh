@@ -51,7 +51,6 @@ class WanVideoPipeline(BasePipeline):
             WanVideoUnit_NoiseInitializer(),
             WanVideoUnit_InputVideoEmbedder(),
             WanVideoUnit_PromptEmbedder(),
-            WanVideoUnit_HistoryCompositor(),
             WanVideoUnit_ImageEmbedderVAE(),
             WanVideoUnit_ImageEmbedderCLIP(),
             WanVideoUnit_ImageEmbedderFused(),
@@ -65,7 +64,6 @@ class WanVideoPipeline(BasePipeline):
             WanVideoUnit_CfgMerger(),
         ]
         self.model_fn = model_fn_wan_video
-        self.generated_latents = None
         
     
     def load_lora(self, module, path, alpha=1):
@@ -285,36 +283,6 @@ class WanVideoPipeline(BasePipeline):
         self.sp_size = get_sequence_parallel_world_size()
         self.use_unified_sequence_parallel = True
 
-    @staticmethod
-    def from_model_manager(model_manager: ModelManager, torch_dtype=None, device=None, use_usp=False):
-        if device is None: device = model_manager.device
-        if torch_dtype is None: torch_dtype = model_manager.torch_dtype
-        pipe = WanVideoPipeline(device=device, torch_dtype=torch_dtype)
-        pipe.fetch_models(model_manager)
-        if use_usp:
-            from xfuser.core.distributed import get_sequence_parallel_world_size
-            from ..distributed.xdit_context_parallel import usp_attn_forward, usp_dit_forward
-
-            for block in pipe.dit.blocks:
-                block.self_attn.forward = types.MethodType(usp_attn_forward, block.self_attn)
-            pipe.dit.forward = types.MethodType(usp_dit_forward, pipe.dit)
-            pipe.sp_size = get_sequence_parallel_world_size()
-            pipe.use_unified_sequence_parallel = True
-        return pipe
-
-
-    def fetch_models(self, model_manager: ModelManager):
-        text_encoder_model_and_path = model_manager.fetch_model("wan_video_text_encoder", require_model_path=True)
-        if text_encoder_model_and_path is not None:
-            self.text_encoder, tokenizer_path = text_encoder_model_and_path
-            self.prompter.fetch_models(self.text_encoder)
-            self.prompter.fetch_tokenizer(os.path.join(os.path.dirname(tokenizer_path), "google/umt5-xxl"))
-        self.dit = model_manager.fetch_model("wan_video_dit")
-        self.vae = model_manager.fetch_model("wan_video_vae")
-        self.image_encoder = model_manager.fetch_model("wan_video_image_encoder")
-        self.motion_controller = model_manager.fetch_model("wan_video_motion_controller")
-        self.vace = model_manager.fetch_model("wan_video_vace")
-
 
     @staticmethod
     def from_pretrained(
@@ -390,8 +358,6 @@ class WanVideoPipeline(BasePipeline):
         input_image: Optional[Image.Image] = None,
         # First-last-frame-to-video
         end_image: Optional[Image.Image] = None,
-        # History-to-video
-        history_size: Optional[int] = None,
         # Video-to-video
         input_video: Optional[list[Image.Image]] = None,
         denoising_strength: Optional[float] = 1.0,
@@ -463,7 +429,6 @@ class WanVideoPipeline(BasePipeline):
             "motion_bucket_id": motion_bucket_id,
             "tiled": tiled, "tile_size": tile_size, "tile_stride": tile_stride,
             "sliding_window_size": sliding_window_size, "sliding_window_stride": sliding_window_stride,
-            "history_size": history_size, "generated_latent": self.generated_latents,
         }
         for unit in self.units:
             inputs_shared, inputs_posi, inputs_nega = self.unit_runner(unit, self, inputs_shared, inputs_posi, inputs_nega)
@@ -499,10 +464,6 @@ class WanVideoPipeline(BasePipeline):
         # VACE (TODO: remove it)
         if vace_reference_image is not None:
             inputs_shared["latents"] = inputs_shared["latents"][:, :, 1:]
-
-        # for history cache
-        if history_size is not None:
-            self.generated_latents = inputs_shared["latents"]
 
         # Decode
         self.load_models_to_device(['vae'])
@@ -643,70 +604,16 @@ class WanVideoUnit_ImageEmbedderCLIP(PipelineUnit):
         return {"clip_feature": clip_context}
     
 
-class WanVideoUnit_HistoryCompositor(PipelineUnit):
-    def __init__(self):
-        super().__init__(
-            input_params=("input_image", "end_image", "num_frames", "height", "width", "tiled", "tile_size", "tile_stride", "history_size", "generated_latent"),
-            onload_model_names=("vae",)
-        )
-        self.history_latents = None
-
-    def process(
-        self, pipe: WanVideoPipeline,
-        input_image, end_image, num_frames, height, width,
-        tiled, tile_size, tile_stride,
-        history_size, generated_latent
-    ):
-        if not pipe.dit.require_vae_embedding or history_size is None or history_size == 0 or generated_latent is None:
-            return {"input_latent": None, "input_latent_mask": None}
-        assert history_size < num_frames // 2 # avoid input and prediction mismatch
-        pipe.load_models_to_device(self.onload_model_names)
-        device = pipe.device
-        dtype = pipe.torch_dtype
-        if generated_latent is None:
-            raise ValueError("generated_latent must be provided when history_size > 0")
-        generated_latent = generated_latent[0] # remove batch dim
-        hist_latent = generated_latent[:, -history_size:, :, :]
-
-        zero_img = torch.zeros(3, height, width, device=device, dtype=dtype)
-        zero_img = zero_img.unsqueeze(1).expand(-1, ((num_frames)//4 + 1 - history_size) * 4, -1, -1)
-        zero_latent = pipe.vae.encode(
-            [zero_img], device=device, tiled=tiled, tile_size=tile_size, tile_stride=tile_stride
-        )[0].to(device)
-        input_latent = torch.cat([hist_latent, zero_latent], dim=1)  # [C, T, H//8, W//8]
-
-        input_latent_mask = torch.zeros(1, num_frames, height//8, width//8, device=device)
-        input_latent_mask[:, :history_size*4] = 1
-        input_latent_mask = torch.concat([torch.repeat_interleave(input_latent_mask[:, 0:1], repeats=4, dim=1), input_latent_mask[:, 1:]], dim=1) 
-        input_latent_mask = input_latent_mask.view(1, input_latent_mask.shape[1] // 4, 4, height // 8, width // 8) 
-        input_latent_mask = input_latent_mask.transpose(1, 2)[0]
-
-        input_latent = input_latent.to(dtype=dtype, device=device)
-        input_latent_mask = input_latent_mask.to(dtype=dtype, device=device)
-        
-        return {
-            "input_latent": input_latent,
-            "input_latent_mask": input_latent_mask
-        }
-    
 
 class WanVideoUnit_ImageEmbedderVAE(PipelineUnit):
     def __init__(self):
         super().__init__(
-            input_params=("input_image", "end_image", "num_frames", "height", "width", "tiled", "tile_size", "tile_stride", "input_latent", "input_latent_mask"),
+            input_params=("input_image", "end_image", "num_frames", "height", "width", "tiled", "tile_size", "tile_stride"),
             onload_model_names=("vae",)
         )
 
-    def process(self, pipe: WanVideoPipeline, input_image, end_image, num_frames, height, width, tiled, tile_size, tile_stride, input_latent, input_latent_mask):
-        if not pipe.dit.require_vae_embedding:
-            return {}
-        # this feature is used for video completion
-        if input_latent is not None and input_latent_mask is not None:
-            y = torch.concat([input_latent_mask, input_latent], dim=0) 
-            y = y.to(dtype=pipe.torch_dtype, device=pipe.device)
-            y = y.unsqueeze(0)
-            return {"y": y}
-        if input_image is None:
+    def process(self, pipe: WanVideoPipeline, input_image, end_image, num_frames, height, width, tiled, tile_size, tile_stride):
+        if input_image is None or not pipe.dit.require_vae_embedding:
             return {}
         pipe.load_models_to_device(self.onload_model_names)
         image = pipe.preprocess_image(input_image.resize((width, height))).to(pipe.device)
@@ -729,6 +636,7 @@ class WanVideoUnit_ImageEmbedderVAE(PipelineUnit):
         y = y.unsqueeze(0)
         y = y.to(dtype=pipe.torch_dtype, device=pipe.device)
         return {"y": y}
+
 
 
 class WanVideoUnit_ImageEmbedderFused(PipelineUnit):
