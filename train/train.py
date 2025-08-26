@@ -92,8 +92,9 @@ class WanTrainingModule(DiffusionTrainingModule):
                 inputs_shared["end_image"] = data["video"][-1]
             elif extra_input == "reference_image" or extra_input == "vace_reference_image":
                 inputs_shared[extra_input] = data[extra_input][0]
-            elif extra_input == "latent_index":
+            elif extra_input == "use_latent_index":
                 inputs_shared[extra_input] = True
+                inputs_shared["num_frames"] = (9 + 1 + 1 + 1) * 4 + 1 # fixed for framepack training
             else:
                 inputs_shared[extra_input] = data[extra_input]
         
@@ -133,22 +134,7 @@ if __name__ == "__main__":
     )
     optimizer = torch.optim.AdamW(model.trainable_modules(), lr=args.learning_rate, weight_decay=args.weight_decay)
     scheduler = torch.optim.lr_scheduler.ConstantLR(optimizer)
-    if args.wandb_api_key is not None:
-        import wandb
-        os.environ["WANDB_MODE"] = "offline"
-        os.environ["WANDB_API_KEY"] = args.wandb_api_key
-        assert args.wandb_entity is not None and args.wandb_project is not None
-        wanbd_run = wandb.init(
-            entity=args.wandb_entity,
-            project=args.wandb_project,
-            config={
-                "learning_rate": args.learning_rate,
-                "architecture": "wandit",
-                "dataset": "video",
-                "epochs": args.num_epochs,
-            },
-        )
-
+    wandb_args = [args.wandb_api_key, args.wandb_entity, args.wandb_project, args.learning_rate]
     launch_training_task(
         dataset, model, model_logger, optimizer, scheduler,
         num_epochs=args.num_epochs,
@@ -156,5 +142,5 @@ if __name__ == "__main__":
         save_steps=args.save_steps,
         find_unused_parameters=args.find_unused_parameters,
         num_workers=args.dataset_num_workers,
-        wanbd_run=wanbd_run,
+        wandb_args=wandb_args,
     )

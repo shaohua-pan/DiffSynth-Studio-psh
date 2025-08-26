@@ -156,6 +156,7 @@ class VideoDataset(torch.utils.data.Dataset):
         image_file_extension=("jpg", "jpeg", "png", "webp"),
         video_file_extension=("mp4", "avi", "mov", "wmv", "mkv", "flv", "webm"),
         repeat=1,
+        train_framepack=False,
         args=None,
     ):
         if args is not None:
@@ -167,6 +168,7 @@ class VideoDataset(torch.utils.data.Dataset):
             num_frames = args.num_frames
             data_file_keys = args.data_file_keys.split(",")
             repeat = args.dataset_repeat
+            train_framepack = args.train_framepack
         
         self.base_path = base_path
         self.num_frames = num_frames
@@ -181,7 +183,8 @@ class VideoDataset(torch.utils.data.Dataset):
         self.image_file_extension = image_file_extension
         self.video_file_extension = video_file_extension
         self.repeat = repeat
-        
+        self.train_framepack = train_framepack
+
         if height is not None and width is not None:
             print("Height and width are fixed. Setting `dynamic_resolution` to False.")
             self.dynamic_resolution = False
@@ -272,7 +275,20 @@ class VideoDataset(torch.utils.data.Dataset):
         reader.close()
         return frames
     
+
+    def load_full_video(self, file_path):
+        reader = imageio.get_reader(file_path)
+        num_frames = reader.count_frames()
+        frames = []
+        for frame_id in range(num_frames):
+            frame = reader.get_data(frame_id)
+            frame = Image.fromarray(frame)
+            frame = self.crop_and_resize(frame, *self.get_height_width(frame))
+            frames.append(frame)
+        reader.close()
+        return frames
     
+
     def load_image(self, file_path):
         image = Image.open(file_path).convert("RGB")
         image = self.crop_and_resize(image, *self.get_height_width(image))
@@ -301,6 +317,9 @@ class VideoDataset(torch.utils.data.Dataset):
 
     def __getitem__(self, data_id):
         data = self.data[data_id % len(self.data)].copy()
+        if self.train_framepack:
+            data['video'] = self.load_full_video(data['video'])
+            return data
         for key in self.data_file_keys:
             if key in data:
                 path = os.path.join(self.base_path, data[key])
@@ -421,17 +440,23 @@ def launch_training_task(
     num_epochs: int = 1,
     gradient_accumulation_steps: int = 1,
     find_unused_parameters: bool = False,
-    wandb_run: object = None,
+    wandb_args: object = None,
 ):
     dataloader = torch.utils.data.DataLoader(dataset, shuffle=True, collate_fn=lambda x: x[0], num_workers=num_workers)
     accelerator = Accelerator(
         gradient_accumulation_steps=gradient_accumulation_steps,
         kwargs_handlers=[DistributedDataParallelKwargs(find_unused_parameters=find_unused_parameters)],
+        log_with="wandb",
     )
+
+    accelerator.init_trackers(project_name=wandb_args[2], 
+                              config={"learning_rate": wandb_args[3]}, 
+                              init_kwargs={"wandb": {"entity": wandb_args[1]}})
+
     model, optimizer, dataloader, scheduler = accelerator.prepare(model, optimizer, dataloader, scheduler)
     
     for epoch_id in range(num_epochs):
-        epoch_loss += 0.0
+        epoch_loss = 0.0
         for step, data in enumerate(tqdm(dataloader)):
             with accelerator.accumulate(model):
                 optimizer.zero_grad()
@@ -439,16 +464,15 @@ def launch_training_task(
                 accelerator.backward(loss)
                 optimizer.step()
                 model_logger.on_step_end(accelerator, model, save_steps)
-                if wandb_run is not None:
-                    step_loss = accelerator.gather(loss).mean().item()
-                    wandb_run.log({"setp_loss": step_loss, "lr": scheduler.get_last_lr()[0]}, step=epoch_id * len(dataloader) + step)
-                    epoch_loss += step_loss
+                step_loss = accelerator.gather(loss).mean().item()
+                accelerator.log({"step_loss": step_loss, "lr": scheduler.get_last_lr()[0]}, step=epoch_id * len(dataloader) + step)
+                epoch_loss += step_loss
                 scheduler.step()
         if save_steps is None:
             model_logger.on_epoch_end(accelerator, model, epoch_id)
-        if wandb_run is not None:
-            wandb_run.log({"epoch_loss": epoch_loss / len(dataloader)}, step=(epoch_id + 1) * len(dataloader))
+        accelerator.log({"epoch_loss": epoch_loss / len(dataloader)}, step=(epoch_id + 1) * len(dataloader))
     model_logger.on_training_end(accelerator, model, save_steps)
+    accelerator.finish()
 
 
 def launch_data_process_task(model: DiffusionTrainingModule, dataset, output_path="./models"):
@@ -494,6 +518,7 @@ def wan_parser():
     parser.add_argument("--save_steps", type=int, default=None, help="Number of checkpoint saving invervals. If None, checkpoints will be saved every epoch.")
     parser.add_argument("--dataset_num_workers", type=int, default=0, help="Number of workers for data loading.")
     parser.add_argument("--weight_decay", type=float, default=0.01, help="Weight decay.")
+    parser.add_argument("--train_framepack", action="store_true", help="Whether to train using FramePack.")
     parser.add_argument("--wandb_api_key", type=str, default=None, help="Weights & Biases API Key.")
     parser.add_argument("--wandb_entity", type=str, default=None, help="Weights & Biases entity.")
     parser.add_argument("--wandb_project", type=str, default=None, help="Weights & Biases project.")

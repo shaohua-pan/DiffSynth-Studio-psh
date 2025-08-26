@@ -1,3 +1,4 @@
+import random
 import torch, warnings, glob, os, types
 import numpy as np
 from PIL import Image
@@ -14,7 +15,7 @@ from typing_extensions import Literal
 
 from ..utils import BasePipeline, ModelConfig, PipelineUnit, PipelineUnitRunner
 from ..models import ModelManager, load_state_dict
-from ..models.wan_video_dit import WanModel, RMSNorm, sinusoidal_embedding_1d
+from ..models.wan_video_dit2 import WanModel, RMSNorm, sinusoidal_embedding_1d
 from ..models.wan_video_text_encoder import WanTextEncoder, T5RelativeEmbedding, T5LayerNorm
 from ..models.wan_video_vae import WanVideoVAE, RMS_norm, CausalConv3d, Upsample
 from ..models.wan_video_image_encoder import WanImageEncoder
@@ -24,6 +25,7 @@ from ..schedulers.flow_match import FlowMatchScheduler
 from ..prompters import WanPrompter
 from ..vram_management import enable_vram_management, AutoWrappedModule, AutoWrappedLinear, WanAutoCastLayerNorm
 from ..lora import GeneralLoRALoader
+import math 
 
 
 
@@ -51,6 +53,7 @@ class WanVideoPipeline(BasePipeline):
             WanVideoUnit_NoiseInitializer(),
             WanVideoUnit_InputVideoEmbedder(),
             WanVideoUnit_PromptEmbedder(),
+            WanVideoUnit_FramePackImageEmbedderVAE(),
             WanVideoUnit_ImageEmbedderVAE(),
             WanVideoUnit_ImageEmbedderCLIP(),
             WanVideoUnit_ImageEmbedderFused(),
@@ -78,11 +81,14 @@ class WanVideoPipeline(BasePipeline):
         timestep_id = torch.randint(min_timestep_boundary, max_timestep_boundary, (1,))
         timestep = self.scheduler.timesteps[timestep_id].to(dtype=self.torch_dtype, device=self.device)
         
-        inputs["latents"] = self.scheduler.add_noise(inputs["input_latents"], inputs["noise"], timestep)
-        training_target = self.scheduler.training_target(inputs["input_latents"], inputs["noise"], timestep)
+        clean_latent_indices_pre, latent_indices, clean_latent_indices_post, clean_latent_2x_indices, clean_latent_4x_indices = inputs["latent_indices_all"]
+        input_latents = torch.cat([inputs["input_latents"][:, :, :clean_latent_indices_pre[-1]+1],
+                                    inputs["input_latents"][:, :, latent_indices[0][0]:clean_latent_4x_indices[0][-1]+1]], dim=2)
+        inputs["latents"] = self.scheduler.add_noise(input_latents, inputs["noise"], timestep)
+        training_target = self.scheduler.training_target(inputs["latents"], inputs["noise"], timestep)
         
         noise_pred = self.model_fn(**inputs, timestep=timestep)
-        
+        noise_pred, training_target = noise_pred[:, :, 1:len(latent_indices[0])+1], training_target[:, :, 1:len(latent_indices[0])+1]
         loss = torch.nn.functional.mse_loss(noise_pred.float(), training_target.float())
         loss = loss * self.scheduler.training_weight(timestep)
         return loss
@@ -608,12 +614,12 @@ class WanVideoUnit_ImageEmbedderCLIP(PipelineUnit):
 class WanVideoUnit_ImageEmbedderVAE(PipelineUnit):
     def __init__(self):
         super().__init__(
-            input_params=("input_image", "end_image", "num_frames", "height", "width", "tiled", "tile_size", "tile_stride"),
+            input_params=("input_image", "end_image", "num_frames", "height", "width", "tiled", "tile_size", "tile_stride", "use_latent_index"),
             onload_model_names=("vae",)
         )
 
-    def process(self, pipe: WanVideoPipeline, input_image, end_image, num_frames, height, width, tiled, tile_size, tile_stride):
-        if input_image is None or not pipe.dit.require_vae_embedding:
+    def process(self, pipe: WanVideoPipeline, input_image, end_image, num_frames, height, width, tiled, tile_size, tile_stride, use_latent_index):
+        if input_image is None or not pipe.dit.require_vae_embedding or use_latent_index:
             return {}
         pipe.load_models_to_device(self.onload_model_names)
         image = pipe.preprocess_image(input_image.resize((width, height))).to(pipe.device)
@@ -638,6 +644,63 @@ class WanVideoUnit_ImageEmbedderVAE(PipelineUnit):
         return {"y": y}
 
 
+class WanVideoUnit_FramePackImageEmbedderVAE(PipelineUnit):
+    def __init__(self):
+        super().__init__(
+            input_params=("input_image", "end_image", "num_frames", "height", "width", "tiled", "tile_size", "tile_stride", "use_latent_index", "input_video"),
+            onload_model_names=("vae",)
+        )
+
+    def process(self, pipe: WanVideoPipeline, input_image, end_image, num_frames, height, width, tiled, tile_size, tile_stride, use_latent_index, input_video):
+        if input_image is None or not pipe.dit.require_vae_embedding or not use_latent_index:
+            return {}
+        pipe.load_models_to_device(self.onload_model_names)
+        image = pipe.preprocess_image(input_image.resize((width, height))).to(pipe.device)
+        msk = torch.zeros(1, num_frames, height // 8, width // 8, device=pipe.device)
+        msk[:, :1] = 1
+        latent_window_size = 9 # fixed 9, do not change
+        total_latent_sections = math.floor((len(input_video) - 1) / (latent_window_size * 4))
+        if total_latent_sections < 1:
+            raise ValueError(
+                f"Not enough frames for FramePack"
+            )
+        latent_paddings = list(range(total_latent_sections))
+        if total_latent_sections > 4:
+            latent_paddings = [3] + [2] * (total_latent_sections - 3) + [1, 0]
+        rnd = random.Random()
+        latent_padding_index = rnd.choice(range(len(latent_paddings)))
+        latent_padding = latent_paddings[latent_padding_index] * latent_window_size
+        indices = torch.arange(0, sum([1, latent_padding, latent_window_size, 1, 1, 1])).unsqueeze(0)
+        (
+            clean_latent_indices_pre,  # Index for start_latent
+            blank_indices,  # Indices for padding (future context in inference)
+            latent_indices,  # Indices for the target latents to predict
+            clean_latent_indices_post,  # Index for the most recent history frame
+            clean_latent_2x_indices,  # Indices for the next 2 history frames
+            clean_latent_4x_indices,  # Indices for the next 16 history frames
+        ) = indices.split([1, latent_padding, latent_window_size, 1, 1, 1], dim=1)
+        # balance the sample
+        coin = rnd.choice(range(6))
+        if coin == 0 or latent_padding_index == len(latent_paddings)-1:
+            # only the first frame as clean latent
+            vae_input = torch.concat([image.transpose(0, 1), torch.zeros(3, num_frames-1, height, width).to(image.device)], dim=1)
+        else:
+            post_image = pipe.preprocess_image(input_video[clean_latent_indices_post*4].resize((width, height))).to(pipe.device)
+            post_2x_image = pipe.preprocess_image(input_video[clean_latent_2x_indices*4].resize((width, height))).to(pipe.device)
+            post_4x_image = pipe.preprocess_image(input_video[clean_latent_4x_indices*4].resize((width, height))).to(pipe.device)
+            vae_input = torch.concat([image.transpose(0, 1), torch.zeros(3, num_frames-4, height, width).to(image.device), 
+                                  post_image.transpose(0, 1), post_2x_image.transpose(0, 1), post_4x_image.transpose(0, 1)], dim=1)
+            msk[:, -1:] = 1
+        y = pipe.vae.encode([vae_input.to(dtype=pipe.torch_dtype, device=pipe.device)], device=pipe.device, tiled=tiled, tile_size=tile_size, tile_stride=tile_stride)[0]
+        y = y.to(dtype=pipe.torch_dtype, device=pipe.device)
+        msk = torch.concat([torch.repeat_interleave(msk[:, 0:1], repeats=4, dim=1), msk[:, 1:]], dim=1)
+        msk = msk.view(1, msk.shape[1] // 4, 4, height//8, width//8)
+        msk = msk.transpose(1, 2)[0]
+        y = torch.concat([msk, y])
+        y = y.unsqueeze(0)
+        y = y.to(dtype=pipe.torch_dtype, device=pipe.device)
+        return {"y": y, "latent_indices_all": [clean_latent_indices_pre, latent_indices, clean_latent_indices_post, clean_latent_2x_indices, clean_latent_4x_indices]}
+    
 
 class WanVideoUnit_ImageEmbedderFused(PipelineUnit):
     """
