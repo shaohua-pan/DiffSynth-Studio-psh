@@ -653,20 +653,20 @@ class WanVideoUnit_ImageEmbedderVAE(PipelineUnit):
         # for prev frames as condition to generate
         if prev_frames is not None:
             prev_frames_len = len(prev_frames)
-            # next_frames_len = len(next_frames)
+            next_frames_len = len(next_frames)
             msk = torch.zeros(1, num_frames, height//8, width//8, device=pipe.device)
             msk[:, :prev_frames_len] = 1
-            # msk[:, -next_frames_len:] = 1
+            msk[:, -next_frames_len:] = 1
             msk = torch.concat([torch.repeat_interleave(msk[:, 0:1], repeats=4, dim=1), msk[:, 1:]], dim=1)
             msk = msk.view(1, msk.shape[1] // 4, 4, height//8, width//8)
             msk = msk.transpose(1, 2)[0]
             prev_frames = [prev_frame.resize((width, height)) for prev_frame in prev_frames]
-            # next_frames = [next_frame.resize((width, height)) for next_frame in next_frames]
+            next_frames = [next_frame.resize((width, height)) for next_frame in next_frames]
             pipe.load_models_to_device(self.onload_model_names)
             prev_frames = pipe.preprocess_video(prev_frames)[0]
-            # next_frames = pipe.preprocess_video(next_frames)[0]
-            # vae_input = torch.concat([prev_frames, torch.zeros(3, num_frames-prev_frames_len-next_frames_len, height, width).to(prev_frames.device), next_frames],dim=1)
-            vae_input = torch.concat([prev_frames, torch.zeros(3, num_frames-prev_frames_len, height, width).to(prev_frames.device)],dim=1)
+            next_frames = pipe.preprocess_video(next_frames)[0]
+            vae_input = torch.concat([prev_frames, torch.zeros(3, num_frames-prev_frames_len-next_frames_len, height, width).to(prev_frames.device), next_frames],dim=1)
+            # vae_input = torch.concat([prev_frames, torch.zeros(3, num_frames-prev_frames_len, height, width).to(prev_frames.device)],dim=1)
             y = pipe.vae.encode([vae_input.to(dtype=pipe.torch_dtype, device=pipe.device)], device=pipe.device, tiled=tiled, tile_size=tile_size, tile_stride=tile_stride)[0]
             y = y.to(dtype=pipe.torch_dtype, device=pipe.device)
             y = torch.concat([msk, y])

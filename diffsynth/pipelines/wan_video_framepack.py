@@ -15,7 +15,7 @@ from typing_extensions import Literal
 
 from ..utils import BasePipeline, ModelConfig, PipelineUnit, PipelineUnitRunner
 from ..models import ModelManager, load_state_dict
-from ..models.wan_video_dit2 import WanModel, RMSNorm, sinusoidal_embedding_1d
+from ..models.wan_video_dit import WanModel, RMSNorm, sinusoidal_embedding_1d
 from ..models.wan_video_text_encoder import WanTextEncoder, T5RelativeEmbedding, T5LayerNorm
 from ..models.wan_video_vae import WanVideoVAE, RMS_norm, CausalConv3d, Upsample
 from ..models.wan_video_image_encoder import WanImageEncoder
@@ -690,7 +690,7 @@ class WanVideoUnit_FramePackImageEmbedderVAE(PipelineUnit):
             post_4x_image = pipe.preprocess_image(input_video[clean_latent_4x_indices*4].resize((width, height))).to(pipe.device)
             vae_input = torch.concat([image.transpose(0, 1), torch.zeros(3, num_frames-4, height, width).to(image.device), 
                                   post_image.transpose(0, 1), post_2x_image.transpose(0, 1), post_4x_image.transpose(0, 1)], dim=1)
-            msk[:, -1:] = 1
+            msk[:, -4:] = 1
         y = pipe.vae.encode([vae_input.to(dtype=pipe.torch_dtype, device=pipe.device)], device=pipe.device, tiled=tiled, tile_size=tile_size, tile_stride=tile_stride)[0]
         y = y.to(dtype=pipe.torch_dtype, device=pipe.device)
         msk = torch.concat([torch.repeat_interleave(msk[:, 0:1], repeats=4, dim=1), msk[:, 1:]], dim=1)
@@ -1043,6 +1043,7 @@ def model_fn_wan_video(
     use_gradient_checkpointing_offload: bool = False,
     control_camera_latents_input = None,
     fuse_vae_embedding_in_latents: bool = False,
+    latent_indices_all: Optional[list] = None,
     **kwargs,
 ):
     if sliding_window_size is not None and sliding_window_stride is not None:
@@ -1123,11 +1124,21 @@ def model_fn_wan_video(
         x = torch.concat([reference_latents, x], dim=1)
         f += 1
     
-    freqs = torch.cat([
-        dit.freqs[0][:f].view(f, 1, 1, -1).expand(f, h, w, -1),
-        dit.freqs[1][:h].view(1, h, 1, -1).expand(f, h, w, -1),
-        dit.freqs[2][:w].view(1, 1, w, -1).expand(f, h, w, -1)
-    ], dim=-1).reshape(f * h * w, 1, -1).to(x.device)
+    if latent_indices_all is not None:
+        clean_latent_indices_pre, latent_indices, clean_latent_indices_post, clean_latent_2x_indices, clean_latent_4x_indices = latent_indices_all
+        freqs_f = torch.cat([dit.freqs[0][clean_latent_indices_pre[0]], dit.freqs[0][latent_indices[0]], dit.freqs[0][clean_latent_indices_post[0]],
+                            dit.freqs[0][clean_latent_2x_indices[0]], dit.freqs[0][clean_latent_4x_indices[0]]], dim=0)
+        freqs = torch.cat([
+            freqs_f.view(f, 1, 1, -1).expand(f, h, w, -1),
+            dit.freqs[1][:h].view(1, h, 1, -1).expand(f, h, w, -1),
+            dit.freqs[2][:w].view(1, 1, w, -1).expand(f, h, w, -1)
+        ], dim=-1).reshape(f * h * w, 1, -1).to(x.device)
+    else:
+        freqs = torch.cat([
+            dit.freqs[0][:f].view(f, 1, 1, -1).expand(f, h, w, -1),
+            dit.freqs[1][:h].view(1, h, 1, -1).expand(f, h, w, -1),
+            dit.freqs[2][:w].view(1, 1, w, -1).expand(f, h, w, -1)
+        ], dim=-1).reshape(f * h * w, 1, -1).to(x.device)
     
     # TeaCache
     if tea_cache is not None:

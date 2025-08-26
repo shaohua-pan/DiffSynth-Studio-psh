@@ -1,7 +1,7 @@
 import torch
 from PIL import Image
 from diffsynth import save_video, VideoData
-from diffsynth.pipelines.wan_video_new import WanVideoPipeline, ModelConfig, ModelManager
+from diffsynth.pipelines.wan_video_new2 import WanVideoPipeline, ModelConfig, ModelManager
 from modelscope import dataset_snapshot_download
 import os 
 from diffsynth.models.wan_video_dit import WanModel
