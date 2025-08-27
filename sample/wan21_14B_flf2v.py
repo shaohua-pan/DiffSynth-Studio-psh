@@ -62,17 +62,20 @@ video = pipe_i2v(
             height=832, width=480,
         )
 videos.extend(video)
-for i in range(1, 7):
-    input_image = videos[i*10+(i-1)*79]
-    end_image = videos[i*10+1+(i-1)*79]
+for i in range(1, 5):
+    prev_frames = videos[i*7+(i-1)*79:i*7+5+(i-1)*79]
+    next_frames = videos[i*7+5+(i-1)*79:i*7+9+(i-1)*79]
     video = pipe(
         prompt="主播正在专注地讲解商品，她的动作缓慢，手指清晰可见，动作幅度很小。",
         negative_prompt="色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走",
-        input_image=input_image,
-        end_image=end_image,
+        prev_frames=prev_frames,
+        next_frames=next_frames,
+        input_image=prev_frames[0],
+        end_image=next_frames[-1],
         seed=23333+i, tiled=True,
         height=832, width=480,
+        cfg_scale=5.5, sigma_shift=16.0,
     )
-    videos = videos[:i*10+(i-1)*79] + video + videos[i*10+2+(i-1)*79:]
-    save_video(video, f"output/yishushi_flf2v_lora_{i}.mp4", fps=15, quality=5)
-save_video(videos, f"output/yishushi_flf2v_lora__all.mp4", fps=15, quality=5)
+    videos = videos[:i*7+(i-1)*79] + video + videos[i*7+9+(i-1)*79:]
+    save_video(video, f"output/yishushi_flf2v_lora2_{i}.mp4", fps=15, quality=5)
+save_video(videos, f"output/yishushi_flf2v_lora2__all.mp4", fps=15, quality=5)

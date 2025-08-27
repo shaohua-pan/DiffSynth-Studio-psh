@@ -1,8 +1,10 @@
 import torch
 from PIL import Image
-from diffsynth import save_video, VideoData
+from diffsynth import save_video, VideoData, load_state_dict
 from diffsynth.pipelines.wan_video_new import WanVideoPipeline, ModelConfig
 from modelscope import dataset_snapshot_download
+import imageio
+from PIL import Image
 
 tokenizer_config = ModelConfig(path="/root/paddlejob/bosdata/huangluying/Wan/Wan2.1-T2V-1.3B/google/umt5-xxl")
 pipe = WanVideoPipeline.from_pretrained(
@@ -16,9 +18,15 @@ pipe = WanVideoPipeline.from_pretrained(
     ],
     tokenizer_config=tokenizer_config
 )
+state_dict = load_state_dict("/root/paddlejob/workspace/env_run/panshaohua/code/DiffSynth-Studio-psh/ckpts/Wan2.1-Fun-1.3B-InP_full/step-120.safetensors")
+pipe.dit.load_state_dict(state_dict)
 pipe.enable_vram_management()
 
+# reader = Image.fromarray(imageio.get_reader('/root/paddlejob/workspace/env_run/panshaohua/code/DiffSynth-Studio-psh/data/samples/420_450.mp4'))
+# input_image = reader.get_data(0)
+
 videos = []
+
 image = Image.open("/root/paddlejob/workspace/env_run/panshaohua/code/DiffSynth-Studio-psh/data/samples/yishushi.jpg")
 prev_frames = [image for i in range(40)]
 for i in range(6):
@@ -33,6 +41,6 @@ for i in range(6):
         videos.extend(video)
     else:
         videos.extend(video[1:]) 
-    save_video(video, f"output/yishushi_1frame_1.3B_{i}.mp4", fps=15, quality=5)
+    save_video(video, f"output/yishushi_1frame_1.3B2_{i}.mp4", fps=15, quality=5)
     prev_frames = video
-save_video(videos, f"output/yishushi_1frame_1.3B_all.mp4", fps=15, quality=5)
+save_video(videos, f"output/yishushi_1frame_1.3B2_all.mp4", fps=15, quality=5)

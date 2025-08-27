@@ -38,13 +38,14 @@
   --height 480 \
   --width 832 \
   --dataset_repeat 100 \
+  --save_steps 20 \
   --model_paths '[
     "/root/paddlejob/workspace/env_run/panshaohua/DiffSynth-Studio-psh/test/models/PAI/Wan2.1-Fun-1.3B-InP/diffusion_pytorch_model.safetensors",
     "/root/paddlejob/workspace/env_run/panshaohua/DiffSynth-Studio-psh/test/models/Wan-AI/Wan2.1-T2V-1.3B/models_t5_umt5-xxl-enc-bf16.pth",
     "/root/paddlejob/workspace/env_run/panshaohua/DiffSynth-Studio-psh/test/models/Wan-AI/Wan2.1-T2V-1.3B/Wan2.1_VAE.pth",
     "/root/paddlejob/workspace/env_run/panshaohua/DiffSynth-Studio-psh/test/models/Wan-AI/Wan2.1-I2V-14B-480P/models_clip_open-clip-xlm-roberta-large-vit-huge-14.pth"]' \
   --learning_rate 1e-5 \
-  --num_epochs 30 \
+  --num_epochs 10 \
   --remove_prefix_in_ckpt "pipe.dit." \
   --output_path "./ckpts/Wan2.1-Fun-1.3B-InP_full" \
   --trainable_models "dit" \

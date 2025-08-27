@@ -184,6 +184,7 @@ class VideoDataset(torch.utils.data.Dataset):
         self.video_file_extension = video_file_extension
         self.repeat = repeat
         self.train_framepack = train_framepack
+        self.backup_frames = None
 
         if height is not None and width is not None:
             print("Height and width are fixed. Setting `dynamic_resolution` to False.")
@@ -277,16 +278,21 @@ class VideoDataset(torch.utils.data.Dataset):
     
 
     def load_full_video(self, file_path):
-        reader = imageio.get_reader(file_path)
-        num_frames = reader.count_frames()
-        frames = []
-        for frame_id in range(num_frames):
-            frame = reader.get_data(frame_id)
-            frame = Image.fromarray(frame)
-            frame = self.crop_and_resize(frame, *self.get_height_width(frame))
-            frames.append(frame)
-        reader.close()
-        return frames
+        try:
+            reader = imageio.get_reader(file_path)
+            num_frames = reader.count_frames()
+            frames = []
+            for frame_id in range(num_frames):
+                frame = reader.get_data(frame_id)
+                frame = Image.fromarray(frame)
+                frame = self.crop_and_resize(frame, *self.get_height_width(frame))
+                frames.append(frame)
+            reader.close()
+            self.backup_frames = frames
+            return frames
+        except Exception as e:
+            print(f"Error loading video {file_path}: {str(e)}")
+            return self.backup_frames
     
 
     def load_image(self, file_path):
