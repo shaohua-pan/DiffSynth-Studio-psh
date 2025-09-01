@@ -43,3 +43,4 @@ output
 temp
 wandb/
 core*
+tensorboard

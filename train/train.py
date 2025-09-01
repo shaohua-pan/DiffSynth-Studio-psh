@@ -17,6 +17,7 @@ class WanTrainingModule(DiffusionTrainingModule):
         extra_inputs=None,
         max_timestep_boundary=1.0,
         min_timestep_boundary=0.0,
+        latent_window_size=None,
     ):
         super().__init__()
         # Load models
@@ -56,6 +57,7 @@ class WanTrainingModule(DiffusionTrainingModule):
         self.extra_inputs = extra_inputs.split(",") if extra_inputs is not None else []
         self.max_timestep_boundary = max_timestep_boundary
         self.min_timestep_boundary = min_timestep_boundary
+        self.latent_window_size = latent_window_size
         
         
     def forward_preprocess(self, data):
@@ -82,6 +84,7 @@ class WanTrainingModule(DiffusionTrainingModule):
             "vace_scale": 1,
             "max_timestep_boundary": self.max_timestep_boundary,
             "min_timestep_boundary": self.min_timestep_boundary,
+            "latent_window_size": self.latent_window_size,
         }
         
         # Extra inputs
@@ -94,7 +97,7 @@ class WanTrainingModule(DiffusionTrainingModule):
                 inputs_shared[extra_input] = data[extra_input][0]
             elif extra_input == "use_latent_index":
                 inputs_shared[extra_input] = True
-                inputs_shared["num_frames"] = (9 + 1 + 1 + 1) * 4 + 1 # fixed for framepack training
+                inputs_shared["num_frames"] = (self.latent_window_size + 1) * 4 + 1 # fixed for framepack training
             else:
                 inputs_shared[extra_input] = data[extra_input]
         
@@ -127,6 +130,7 @@ if __name__ == "__main__":
         extra_inputs=args.extra_inputs,
         max_timestep_boundary=args.max_timestep_boundary,
         min_timestep_boundary=args.min_timestep_boundary,
+        latent_window_size=args.latent_window_size
     )
     model_logger = ModelLogger(
         args.output_path,

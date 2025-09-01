@@ -32,21 +32,21 @@
 #   --extra_inputs "input_image,end_image"
 
 
-  accelerate launch --config_file single_machine_config.yaml train/train.py \
+  accelerate launch --config_file double_machine_config2.yaml train/train.py \
   --dataset_base_path data/aimier \
   --dataset_metadata_path data/aimier/metadata.csv \
   --height 832 \
   --width 480 \
   --dataset_repeat 10000 \
    --model_paths '[
-    "/root/paddlejob/bosdata/panshaohua/Wan/Wan2.1-Fun-1.3B-InP/diffusion_pytorch_model.safetensors",
-    "/root/paddlejob/bosdata/panshaohua/Wan/Wan2.1-FLF2V-14B-720P/models_t5_umt5-xxl-enc-bf16.pth",
-    "/root/paddlejob/bosdata/panshaohua/Wan/Wan2.1-FLF2V-14B-720P/Wan2.1_VAE.pth",
-    "/root/paddlejob/bosdata/panshaohua/Wan/Wan2.1-FLF2V-14B-720P/models_clip_open-clip-xlm-roberta-large-vit-huge-14.pth"]' \
-  --learning_rate 1e-5 \
+    "/root/paddlejob/workspace/env_run/panshaohua/DiffSynth-Studio-psh/test/models/PAI/Wan2.1-Fun-1.3B-InP/diffusion_pytorch_model.safetensors",
+    "/root/paddlejob/workspace/env_run/panshaohua/DiffSynth-Studio-psh/test/models/Wan-AI/Wan2.1-T2V-1.3B/models_t5_umt5-xxl-enc-bf16.pth",
+    "/root/paddlejob/workspace/env_run/panshaohua/DiffSynth-Studio-psh/test/models/Wan-AI/Wan2.1-T2V-1.3B/Wan2.1_VAE.pth",
+    "/root/paddlejob/workspace/env_run/panshaohua/DiffSynth-Studio-psh/test/models/Wan-AI/Wan2.1-I2V-14B-480P/models_clip_open-clip-xlm-roberta-large-vit-huge-14.pth"]' \
+  --learning_rate 3e-6 \
   --num_epochs 3 \
   --remove_prefix_in_ckpt "pipe.dit." \
-  --output_path "./ckpts/Wan2.1-Fun-1.3B-InP_full_0830" \
+  --output_path "./ckpts/Wan2.1-Fun-1.3B-InP_full_fix" \
   --trainable_models "dit" \
   --extra_inputs "input_image,use_latent_index" \
   --train_framepack \
@@ -54,4 +54,4 @@
   --wandb_entity "baidu-vis" \
   --wandb_project "wan-framepack" \
   --save_steps 50 \
-  --latent_window_size 9
+  --latent_window_size 1

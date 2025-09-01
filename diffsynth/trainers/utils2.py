@@ -4,8 +4,8 @@ from PIL import Image
 import pandas as pd
 from tqdm import tqdm
 from accelerate import Accelerator
-from accelerate.utils import DistributedDataParallelKwargs
-
+from accelerate.utils import DistributedDataParallelKwargs, ProjectConfiguration
+import random
 
 
 class ImageDataset(torch.utils.data.Dataset):
@@ -281,8 +281,9 @@ class VideoDataset(torch.utils.data.Dataset):
         try:
             reader = imageio.get_reader(file_path)
             num_frames = reader.count_frames()
+            start_frame = random.randint(0, num_frames // 8)
             frames = []
-            for frame_id in range(num_frames):
+            for frame_id in range(start_frame, num_frames):
                 frame = reader.get_data(frame_id)
                 frame = Image.fromarray(frame)
                 frame = self.crop_and_resize(frame, *self.get_height_width(frame))
@@ -449,16 +450,22 @@ def launch_training_task(
     wandb_args: object = None,
 ):
     dataloader = torch.utils.data.DataLoader(dataset, shuffle=True, collate_fn=lambda x: x[0], num_workers=num_workers)
+    project_config = ProjectConfiguration(project_dir="./", logging_dir="tensorboard")
+
     accelerator = Accelerator(
         gradient_accumulation_steps=gradient_accumulation_steps,
         kwargs_handlers=[DistributedDataParallelKwargs(find_unused_parameters=find_unused_parameters)],
-        log_with="wandb",
+        log_with="tensorboard",
+        project_config=project_config,
+        # log_with="wandb",
     )
 
-    accelerator.init_trackers(project_name=wandb_args[2], 
-                              config={"learning_rate": wandb_args[3]}, 
-                              init_kwargs={"wandb": {"entity": wandb_args[1]}})
+    # accelerator.init_trackers(project_name=wandb_args[2], 
+    #                           config={"learning_rate": wandb_args[3]}, 
+    #                           init_kwargs={"wandb": {"entity": wandb_args[1]}})
 
+    accelerator.init_trackers(wandb_args[2], 
+                            config={"learning_rate": wandb_args[3]})
     model, optimizer, dataloader, scheduler = accelerator.prepare(model, optimizer, dataloader, scheduler)
     
     for epoch_id in range(num_epochs):
@@ -528,6 +535,7 @@ def wan_parser():
     parser.add_argument("--wandb_api_key", type=str, default=None, help="Weights & Biases API Key.")
     parser.add_argument("--wandb_entity", type=str, default=None, help="Weights & Biases entity.")
     parser.add_argument("--wandb_project", type=str, default=None, help="Weights & Biases project.")
+    parser.add_argument("--latent_window_size", type=int, default=None, help="Latent window size for framepack.")
     return parser
 
 

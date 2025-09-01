@@ -426,21 +426,30 @@ def launch_training_task(
     accelerator = Accelerator(
         gradient_accumulation_steps=gradient_accumulation_steps,
         kwargs_handlers=[DistributedDataParallelKwargs(find_unused_parameters=find_unused_parameters)],
+        log_with="wandb",
     )
+
+    accelerator.init_trackers(project_name='wan-framepack', 
+                              config={"learning_rate": '1e-5'}, 
+                              init_kwargs={"wandb": {"entity": 'baidu-vis'}})
+
     model, optimizer, dataloader, scheduler = accelerator.prepare(model, optimizer, dataloader, scheduler)
     
     for epoch_id in range(num_epochs):
-        for data in tqdm(dataloader):
+        for step, data in enumerate(tqdm(dataloader)):
             with accelerator.accumulate(model):
                 optimizer.zero_grad()
                 loss = model(data)
                 accelerator.backward(loss)
                 optimizer.step()
                 model_logger.on_step_end(accelerator, model, save_steps)
+                step_loss = accelerator.gather(loss).mean().item()
+                accelerator.log({"step_loss": step_loss, "lr": scheduler.get_last_lr()[0]}, step=epoch_id * len(dataloader) + step)
                 scheduler.step()
         if save_steps is None:
             model_logger.on_epoch_end(accelerator, model, epoch_id)
     model_logger.on_training_end(accelerator, model, save_steps)
+    accelerator.finish()
 
 
 def launch_data_process_task(model: DiffusionTrainingModule, dataset, output_path="./models"):
